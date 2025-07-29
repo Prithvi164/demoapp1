@@ -1,0 +1,1195 @@
+import { useState, useEffect } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Loader2 } from "lucide-react";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+import type { User, Organization, OrganizationProcess, OrganizationLineOfBusiness, OrganizationLocation } from "@shared/schema";
+import { useToast } from "@/hooks/use-toast";
+import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
+import { apiRequest } from "@/lib/queryClient";
+import { Check, FileSpreadsheet, Upload, Download } from "lucide-react";
+import { useAuth } from "@/hooks/use-auth";
+import { usePermissions, PermissionGuard } from "@/hooks/use-permissions"; // Add permissions hook
+import * as XLSX from "xlsx";
+import { Table, TableBody, TableCell, TableHeader, TableHead, TableRow } from "@/components/ui/table";
+
+interface AddUserProps {
+  users: User[];
+  user: User;
+  organization: Organization | undefined;
+  potentialManagers: User[];
+}
+
+// Add bulk upload types
+type BulkUserUpload = {
+  username: string;
+  fullName: string;
+  email: string;
+  role: string;
+  reportingManager: string; // Username of the manager
+  location: string;
+  employeeId: string;
+  password: string;
+  phoneNumber: string;
+  dateOfJoining: string;
+  dateOfBirth: string;
+  education: string;
+  lineOfBusiness: string;
+  process: string;
+};
+
+export function AddUser({ users, user, organization, potentialManagers }: AddUserProps) {
+  const { toast } = useToast();
+  const { hasPermission } = usePermissions();
+  const queryClient = useQueryClient();
+  const [selectedLOBs, setSelectedLOBs] = useState<number[]>([]);
+  const [openLOB, setOpenLOB] = useState(false);
+  const [openProcess, setOpenProcess] = useState(false);
+  const [openManager, setOpenManager] = useState(false);
+  const [openLocation, setOpenLocation] = useState(false);
+  const [bulkUploadData, setBulkUploadData] = useState<BulkUserUpload[]>([]);
+  const [showBulkUpload, setShowBulkUpload] = useState(false);
+  
+  // Reset bulk upload UI if permission is revoked
+  useEffect(() => {
+    if (!hasPermission("upload_users")) {
+      setShowBulkUpload(false);
+      setBulkUploadData([]);
+    }
+  }, [hasPermission]);
+
+  const [newUserData, setNewUserData] = useState({
+    username: "",
+    password: "",
+    fullName: "",
+    employeeId: "",
+    role: "advisor",
+    category: "active", // Default to active
+    email: "",
+    phoneNumber: "",
+    education: "",
+    dateOfJoining: "",
+    dateOfBirth: "",
+    managerId: "none",
+    locationId: "none",
+    processes: [] as number[],
+  });
+
+  const { data: lineOfBusinesses = [], isLoading: isLoadingLOB } = useQuery<OrganizationLineOfBusiness[]>({
+    queryKey: [`/api/organizations/${organization?.id}/line-of-businesses`],
+    enabled: !!organization?.id,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: locations = [], isLoading: isLoadingLocations } = useQuery<OrganizationLocation[]>({
+    queryKey: [`/api/organizations/${organization?.id}/locations`],
+    enabled: !!organization?.id,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: processes = [], isLoading: isLoadingProcesses } = useQuery<OrganizationProcess[]>({
+    queryKey: [`/api/organizations/${organization?.id}/processes`],
+    enabled: !!organization?.id && selectedLOBs.length > 0,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const bulkUploadMutation = useMutation({
+    mutationFn: async (users: BulkUserUpload[]) => {
+      const response = await apiRequest("POST", "/api/users/bulk", { users });
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || "Failed to bulk upload users");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Success",
+        description: "Users uploaded successfully",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const createUserMutation = useMutation({
+    mutationFn: async (data: typeof newUserData) => {
+      try {
+        if (!data.category) {
+          throw new Error("Please select a category (Active or Trainee)");
+        }
+
+        // Get the selected location ID
+        const locationId = data.locationId !== "none" ? Number(data.locationId) : null;
+
+        // Get the first selected LOB ID when processes are selected
+        const lineOfBusinessId = selectedLOBs.length > 0 ? selectedLOBs[0] : null;
+
+        // Create the payload
+        const payload = {
+          ...data,
+          managerId: data.managerId === "none" ? null : Number(data.managerId),
+          locationId,
+          organizationId: organization?.id || null,
+          processes: data.processes,
+          lineOfBusinessId
+        };
+
+        console.log('Creating user with payload:', payload);
+
+        const response = await apiRequest("POST", "/api/users", payload);
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.message || "Failed to create user");
+        }
+        return response.json();
+      } catch (error: any) {
+        throw new Error(error.message || "An unexpected error occurred");
+      }
+    },
+    onSuccess: () => {
+      toast({
+        title: "Success",
+        description: "User created successfully",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      setNewUserData({
+        username: "",
+        password: "",
+        fullName: "",
+        employeeId: "",
+        role: "advisor",
+        category: "",
+        email: "",
+        phoneNumber: "",
+        education: "",
+        dateOfJoining: "",
+        dateOfBirth: "",
+        managerId: "none",
+        locationId: "none",
+        processes: [],
+      });
+      setSelectedLOBs([]);
+    },
+    onError: (error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Rest of your component logic...
+  const filteredProcesses = processes.filter(process =>
+    selectedLOBs.includes(process.lineOfBusinessId)
+  );
+
+  const clearLOBSelections = () => {
+    setSelectedLOBs([]);
+    setNewUserData(prev => ({
+      ...prev,
+      processes: []
+    }));
+    setOpenLOB(false);
+  };
+
+  // Get valid managers based on role hierarchy, preventing circular reporting chains,
+  // and restricting to current user's reporting chain
+  const getValidManagersForRole = (selectedRole: string) => {
+    if (!users) return [];
+    
+    // Define role hierarchy for reporting relationships
+    const roleHierarchy: Record<string, string[]> = {
+      "owner": [], // Owners don't report to anyone
+      "admin": ["owner"], // Admins can only report to owners
+      "manager": ["owner", "admin"], // Managers can report to owners or admins
+      "team_lead": ["owner", "admin", "manager"], // Team leads can report to owners, admins, or managers
+      "quality_analyst": ["owner", "admin", "manager", "team_lead"], // QAs can report to owners, admins, managers, or team leads
+      "trainer": ["owner", "admin", "manager", "team_lead"], // Trainers can report to owners, admins, managers, or team leads
+      "advisor": ["owner", "admin", "manager", "team_lead", "quality_analyst", "trainer"] // Advisors can report to any higher role
+    };
+    
+    // Get allowed manager roles for the selected role
+    const allowedManagerRoles = roleHierarchy[selectedRole] || [];
+    
+    // If no allowed roles, return empty array (e.g., for owners)
+    if (allowedManagerRoles.length === 0) return [];
+    
+    // For owners and admins, they can see all appropriate roles
+    if (user.role === 'owner' || user.role === 'admin') {
+      return users.filter(u => 
+        u.active && 
+        allowedManagerRoles.includes(u.role)
+      );
+    }
+    
+    // For other roles, we need to restrict to users in the current user's downward chain (not upward)
+    
+    // First, include the current user as a potential manager (if appropriate role)
+    let validManagers: User[] = [];
+    if (allowedManagerRoles.includes(user.role)) {
+      validManagers.push(user);
+    }
+    
+    // We need a function to recursively find all subordinates of a user
+    const findAllSubordinates = (managerId: number): User[] => {
+      const directReports = users.filter(u => u.managerId === managerId);
+      let allSubordinates = [...directReports];
+      
+      for (const report of directReports) {
+        const deeperSubordinates = findAllSubordinates(report.id);
+        allSubordinates = [...allSubordinates, ...deeperSubordinates];
+      }
+      
+      return allSubordinates;
+    };
+    
+    // Get all users in the current user's downward reporting chain
+    const subordinates = findAllSubordinates(user.id);
+    
+    // Add subordinates with appropriate roles to valid managers
+    validManagers = [
+      ...validManagers,
+      ...subordinates.filter(u => 
+        u.active && 
+        allowedManagerRoles.includes(u.role)
+      )
+    ];
+    
+    return validManagers;
+  };
+
+  // Check if the specified manager is valid for a user role based on role hierarchy
+  // and restrict to current user's reporting chain
+  const validateRoleHierarchy = (userRole: string, managerUsername: string) => {
+    if (!users || !managerUsername) return true; // Skip validation if no manager specified
+    
+    // Find the manager user
+    const managerUser = users.find(u => u.username === managerUsername);
+    if (!managerUser) return false; // Manager doesn't exist
+    
+    // Get allowed roles for the user
+    const roleHierarchy: Record<string, string[]> = {
+      "owner": [], // Owners don't report to anyone
+      "admin": ["owner"], // Admins can only report to owners
+      "manager": ["owner", "admin"], // Managers can report to owners or admins
+      "team_lead": ["owner", "admin", "manager"], // Team leads can report to owners, admins, or managers
+      "quality_analyst": ["owner", "admin", "manager", "team_lead"], // QAs can report to owners, admins, managers, or team leads
+      "trainer": ["owner", "admin", "manager", "team_lead"], // Trainers can report to owners, admins, managers, or team leads
+      "advisor": ["owner", "admin", "manager", "team_lead", "quality_analyst", "trainer"] // Advisors can report to any higher role
+    };
+    
+    const allowedManagerRoles = roleHierarchy[userRole] || [];
+    
+    // If no allowed roles (e.g., for owners), manager is invalid
+    if (allowedManagerRoles.length === 0) return false;
+    
+    // Check if manager's role is in the allowed roles 
+    const isRoleValid = managerUser.active && allowedManagerRoles.includes(managerUser.role);
+    if (!isRoleValid) return false;
+    
+    // For owners and admins, they can assign anyone with appropriate role
+    if (user.role === 'owner' || user.role === 'admin') {
+      return true;
+    }
+    
+    // For other roles, we need to verify the manager is the current user or one of their subordinates
+    
+    // Helper function to recursively find all subordinates of a user
+    const findAllSubordinates = (managerId: number): User[] => {
+      const directReports = users.filter(u => u.managerId === managerId);
+      let allSubordinates = [...directReports];
+      
+      for (const report of directReports) {
+        const deeperSubordinates = findAllSubordinates(report.id);
+        allSubordinates = [...allSubordinates, ...deeperSubordinates];
+      }
+      
+      return allSubordinates;
+    };
+    
+    // Current user is a valid manager
+    if (managerUser.id === user.id) {
+      return true;
+    }
+    
+    // Get all users in the current user's downward reporting chain
+    const subordinates = findAllSubordinates(user.id);
+    
+    // Check if the specified manager is in the current user's subordinate list
+    return subordinates.some(s => s.id === managerUser.id);
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer);
+      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+      const data = XLSX.utils.sheet_to_json<BulkUserUpload>(worksheet);
+
+      // Enhanced validation for required fields and role hierarchy
+      const validatedData = data.map((row, index) => {
+        // Basic required field validation
+        if (!row.username || !row.email || !row.role || !row.password) {
+          throw new Error(`Row ${index + 1}: Missing required fields (username, email, role, or password)`);
+        }
+        
+        // Validate reporting relationship based on role hierarchy
+        if (row.reportingManager && !validateRoleHierarchy(row.role, row.reportingManager)) {
+          throw new Error(
+            `Row ${index + 1}: Invalid reporting manager "${row.reportingManager}" for role "${row.role}". ` +
+            `Please ensure the manager has a compatible role according to the hierarchy.`
+          );
+        }
+        
+        return row;
+      });
+
+      setBulkUploadData(validatedData);
+      toast({
+        title: "File Uploaded",
+        description: `Successfully parsed ${validatedData.length} users`,
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to parse file",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const downloadTemplate = () => {
+    // First sheet will be the template with example data
+    const template = [
+      {
+        username: "example_user",
+        fullName: "Example User",
+        email: "user@example.com",
+        role: "advisor",
+        reportingManager: "manager_username",
+        location: "Location Name",
+        employeeId: "EMP001",
+        password: "password123",
+        phoneNumber: "1234567890",
+        dateOfJoining: "2024-03-20",
+        dateOfBirth: "1990-01-01",
+        education: "Bachelor's Degree",
+        lineOfBusiness: "Sales",
+        process: "Customer Support, Technical Support" // Example of multiple processes
+      }
+    ];
+    
+    // Second sheet with role hierarchy documentation
+    const roleHierarchyDocs = [
+      {
+        role: "owner",
+        canReportTo: "No one (top of hierarchy)",
+        canManage: "Everyone",
+        reportingChain: "Users can only be assigned managers within their own reporting chain"
+      },
+      {
+        role: "admin",
+        canReportTo: "Owner",
+        canManage: "All except Owner",
+        reportingChain: "Users can only be assigned managers within their own reporting chain"
+      },
+      {
+        role: "manager",
+        canReportTo: "Owner, Admin",
+        canManage: "Team Lead, Quality Analyst, Trainer, Advisor",
+        reportingChain: "Users can only be assigned managers within their own reporting chain"
+      },
+      {
+        role: "team_lead",
+        canReportTo: "Owner, Admin, Manager",
+        canManage: "Quality Analyst, Trainer, Advisor",
+        reportingChain: "Users can only be assigned managers within their own reporting chain"
+      },
+      {
+        role: "quality_analyst",
+        canReportTo: "Owner, Admin, Manager, Team Lead",
+        canManage: "Advisor",
+        reportingChain: "Users can only be assigned managers within their own reporting chain"
+      },
+      {
+        role: "trainer",
+        canReportTo: "Owner, Admin, Manager, Team Lead",
+        canManage: "Advisor",
+        reportingChain: "Users can only be assigned managers within their own reporting chain"
+      },
+      {
+        role: "advisor",
+        canReportTo: "Owner, Admin, Manager, Team Lead, Quality Analyst, Trainer",
+        canManage: "No one",
+        reportingChain: "Users can only be assigned managers within their own reporting chain"
+      }
+    ];
+    
+    // Third sheet with examples and guidance
+    const guidanceSheet = [
+      {
+        section: "Reporting Chain Guidance",
+        description: "When assigning managers, keep in mind that you can only assign managers from your own reporting chain.",
+        example: "If you're a Team Lead who reports to Manager A, you can only assign your team members to yourself or to Manager A and their upline managers."
+      },
+      {
+        section: "Owner/Admin Exception",
+        description: "Owners and Admins can assign users to any appropriate manager, not just those in their reporting chain.",
+        example: "As an Owner or Admin, you have full visibility of the organization hierarchy."
+      },
+      {
+        section: "Common Mistakes",
+        description: "Trying to assign a user to a manager outside your reporting chain will result in validation errors.",
+        example: "If you're a Team Lead reporting to Manager A, you cannot assign users to Team Lead B who reports to Manager B."
+      }
+    ];
+    
+    // Create a roles reference sheet
+    const roleSheet = [
+      {
+        role: "owner",
+        description: "Organization owner with full access",
+        canCreateUsersWithRoles: "All roles except owner",
+        systemRole: "Yes - cannot be changed"
+      },
+      {
+        role: "admin",
+        description: "Administrator with extensive permissions",
+        canCreateUsersWithRoles: "All roles except owner",
+        systemRole: "No"
+      },
+      {
+        role: "manager",
+        description: "Department or team manager",
+        canCreateUsersWithRoles: "team_lead, quality_analyst, trainer, advisor",
+        systemRole: "No"
+      },
+      {
+        role: "team_lead",
+        description: "Team leader responsible for a team of agents",
+        canCreateUsersWithRoles: "quality_analyst, trainer, advisor",
+        systemRole: "No"
+      },
+      {
+        role: "quality_analyst",
+        description: "Quality monitoring and evaluation specialist",
+        canCreateUsersWithRoles: "advisor",
+        systemRole: "No"
+      },
+      {
+        role: "trainer",
+        description: "Training and development specialist",
+        canCreateUsersWithRoles: "advisor",
+        systemRole: "No"
+      },
+      {
+        role: "advisor",
+        description: "Contact center agent/advisor",
+        canCreateUsersWithRoles: "None",
+        systemRole: "No"
+      }
+    ];
+    
+    // Create location reference sheet from available locations
+    const locationSheet = locations.map(location => ({
+      id: location.id,
+      name: location.name,
+      city: location.city,
+      state: location.state,
+      country: location.country
+    }));
+    
+    // Create Line of Business reference sheet
+    const lobSheet = lineOfBusinesses.map(lob => ({
+      id: lob.id,
+      name: lob.name,
+      description: lob.description || ''
+    }));
+    
+    // Create Process reference sheet with LOB associations
+    const processSheet = processes.map(process => ({
+      id: process.id,
+      name: process.name,
+      description: process.description || '',
+      lineOfBusiness: lineOfBusinesses.find(lob => lob.id === process.lineOfBusinessId)?.name || 'Unknown',
+      lineOfBusinessId: process.lineOfBusinessId
+    }));
+
+    // Create the main data template sheet
+    const dataSheet = XLSX.utils.json_to_sheet(template);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, dataSheet, "Template");
+    
+    // Create the role hierarchy guidance sheet
+    const hierarchySheet = XLSX.utils.json_to_sheet(roleHierarchyDocs);
+    XLSX.utils.book_append_sheet(wb, hierarchySheet, "Role Hierarchy");
+    
+    // Create the guidance sheet with examples
+    const guidanceExampleSheet = XLSX.utils.json_to_sheet(guidanceSheet);
+    XLSX.utils.book_append_sheet(wb, guidanceExampleSheet, "Reporting Chain Guide");
+    
+    // Add new reference sheets
+    const roleReferenceSheet = XLSX.utils.json_to_sheet(roleSheet);
+    XLSX.utils.book_append_sheet(wb, roleReferenceSheet, "Roles");
+    
+    const locationReferenceSheet = XLSX.utils.json_to_sheet(locationSheet);
+    XLSX.utils.book_append_sheet(wb, locationReferenceSheet, "Locations");
+    
+    const lobReferenceSheet = XLSX.utils.json_to_sheet(lobSheet);
+    XLSX.utils.book_append_sheet(wb, lobReferenceSheet, "Line of Business");
+    
+    const processReferenceSheet = XLSX.utils.json_to_sheet(processSheet);
+    XLSX.utils.book_append_sheet(wb, processReferenceSheet, "Processes");
+    
+    // Write the file with all sheets
+    XLSX.writeFile(wb, "user_upload_template.xlsx");
+    
+    toast({
+      title: "Template Downloaded",
+      description: "The template includes reference sheets for Roles, Locations, Line of Business, and Processes",
+    });
+  };
+
+  // Check if user has permission to manage users
+  if (!hasPermission("manage_users")) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Add New User</CardTitle>
+          <CardDescription className="text-destructive">
+            You don't have permission to add new users.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
+  if (!organization) {
+    return null;
+  }
+
+  if (isLoadingLOB || isLoadingLocations) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Add New User</CardTitle>
+          <CardDescription>Loading organization data...</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-center p-8">
+            <Loader2 className="h-8 w-8 animate-spin" />
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="border-t-4 border-t-primary/70 shadow-md">
+      <CardHeader className="pb-4 bg-gradient-to-r from-muted/50 to-background">
+        <CardTitle className="flex justify-between items-center">
+          <span className="text-xl font-semibold">Add New User</span>
+          <div className="flex items-center gap-2">
+            {hasPermission("upload_users") && (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={downloadTemplate}
+                  className="flex items-center gap-1.5"
+                  size="sm"
+                >
+                  <Download className="h-4 w-4" />
+                  <span>Template</span>
+                </Button>
+                <Button
+                  variant={showBulkUpload ? "secondary" : "outline"}
+                  onClick={() => setShowBulkUpload(!showBulkUpload)}
+                  className="flex items-center gap-1.5"
+                  size="sm"
+                >
+                  <Upload className="h-4 w-4" />
+                  <span>Bulk Upload</span>
+                </Button>
+              </>
+            )}
+          </div>
+        </CardTitle>
+        <CardDescription className="text-sm mt-1">
+          Complete the form below to create a new user account
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="pt-6">
+        {showBulkUpload && (
+          <PermissionGuard permission="upload_users">
+            <div className="space-y-4 mb-6">
+              <div>
+                <h3 className="text-base font-medium mb-2">Bulk Upload Users</h3>
+                <p className="text-sm text-muted-foreground mb-2">Upload multiple users using an Excel file</p>
+                <div className="mb-4 bg-muted p-3 rounded-md text-sm">
+                  <p className="font-medium mb-1">Role Hierarchy Requirements</p>
+                  <p className="text-muted-foreground">Users can only report to managers with appropriate roles according to the hierarchy:</p>
+                  <ul className="list-disc list-inside text-muted-foreground pl-2 space-y-1 mt-1">
+                    <li>Owners don't report to anyone</li>
+                    <li>Admins can only report to Owners</li>
+                    <li>Managers can report to Owners or Admins</li>
+                    <li>Team Leads can report to Owners, Admins, or Managers</li>
+                    <li>Quality Analysts and Trainers can report to Owners, Admins, Managers, or Team Leads</li>
+                    <li>Advisors can report to any higher role</li>
+                  </ul>
+                  <p className="text-muted-foreground mt-2"><strong>Important:</strong> You can only assign managers who are within your own reporting chain. For example, if you are a Team Lead, you can only assign users to report to yourself or your upline managers.</p>
+                  <p className="text-muted-foreground mt-2">The downloaded template includes detailed guidance in the "Role Hierarchy" sheet.</p>
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="flex-1">
+                    <Label htmlFor="file-upload">Select Excel File</Label>
+                    <div className="flex gap-2 mt-1">
+                      <Input
+                        id="file-upload"
+                        type="file"
+                        accept=".xlsx,.xls"
+                        onChange={handleFileUpload}
+                        className="flex-1"
+                      />
+                      <Button
+                        onClick={() => bulkUploadMutation.mutate(bulkUploadData)}
+                        disabled={bulkUploadData.length === 0 || bulkUploadMutation.isPending}
+                      >
+                        {bulkUploadMutation.isPending ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                            Uploading...
+                          </>
+                        ) : (
+                          "Upload Users"
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {bulkUploadData.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="font-medium">Preview: {bulkUploadData.length} users</h4>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setBulkUploadData([])}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Username</TableHead>
+                        <TableHead>Full Name</TableHead>
+                        <TableHead>Email</TableHead>
+                        <TableHead>Role</TableHead>
+                        <TableHead>Location</TableHead>
+                        <TableHead>Line of Business</TableHead>
+                        <TableHead>Process</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {bulkUploadData.map((user, index) => (
+                        <TableRow key={index}>
+                          <TableCell>{user.username}</TableCell>
+                          <TableCell>{user.fullName}</TableCell>
+                          <TableCell>{user.email}</TableCell>
+                          <TableCell>{user.role}</TableCell>
+                          <TableCell>{user.location}</TableCell>
+                          <TableCell>{user.lineOfBusiness}</TableCell>
+                          <TableCell>{user.process}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </div>
+          </PermissionGuard>
+        )}
+
+        <form
+          className="space-y-6"
+          onSubmit={(e) => {
+            e.preventDefault();
+            createUserMutation.mutate(newUserData);
+          }}
+        >
+          {/* Account Information Section */}
+          <div className="space-y-4">
+            <div className="border-b pb-1 mb-3">
+              <h3 className="text-md font-medium text-primary/80">Account Information</h3>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="username">Username</Label>
+              <Input
+                id="username"
+                value={newUserData.username}
+                onChange={(e) => setNewUserData(prev => ({
+                  ...prev,
+                  username: e.target.value
+                }))}
+                required
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="fullName">Full Name</Label>
+              <Input
+                id="fullName"
+                value={newUserData.fullName}
+                onChange={(e) => setNewUserData(prev => ({
+                  ...prev,
+                  fullName: e.target.value
+                }))}
+                required
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="email">Email</Label>
+              <Input
+                id="email"
+                type="email"
+                value={newUserData.email}
+                onChange={(e) => setNewUserData(prev => ({
+                  ...prev,
+                  email: e.target.value
+                }))}
+                required
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="role">Role</Label>
+              <select
+                id="role"
+                className="w-full rounded-md border border-input bg-background px-3 py-2"
+                value={newUserData.role}
+                onChange={(e) => {
+                  setNewUserData(prev => ({
+                    ...prev,
+                    role: e.target.value,
+                    managerId: "none",
+                    processes: []
+                  }));
+                  setSelectedLOBs([]);
+                }}
+              >
+                {user.role === "owner" ? (
+                  <>
+                    <option value="admin">Admin</option>
+                    <option value="manager">Manager</option>
+                    <option value="team_lead">Team Lead</option>
+                    <option value="quality_analyst">Quality Analyst</option>
+                    <option value="trainer">Trainer</option>
+                    <option value="advisor">Advisor</option>
+                  </>
+                ) : user.role === "admin" ? (
+                  <>
+                    <option value="manager">Manager</option>
+                    <option value="team_lead">Team Lead</option>
+                    <option value="quality_analyst">Quality Analyst</option>
+                    <option value="trainer">Trainer</option>
+                    <option value="advisor">Advisor</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="team_lead">Team Lead</option>
+                    <option value="quality_analyst">Quality Analyst</option>
+                    <option value="trainer">Trainer</option>
+                    <option value="advisor">Advisor</option>
+                  </>
+                )}
+              </select>
+            </div>
+
+            <div>
+              <Label htmlFor="managerId">Reporting Manager</Label>
+              <Popover open={openManager} onOpenChange={setOpenManager}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={openManager}
+                    className="w-full justify-between"
+                  >
+                    {newUserData.managerId === "none"
+                      ? "Select manager..."
+                      : getValidManagersForRole(newUserData.role).find(m => m.id.toString() === newUserData.managerId)
+                        ? `${getValidManagersForRole(newUserData.role).find(m => m.id.toString() === newUserData.managerId)?.fullName}`
+                        : "Select manager..."}
+                    <Check
+                      className={cn(
+                        "ml-2 h-4 w-4",
+                        newUserData.managerId !== "none" ? "opacity-100" : "opacity-0"
+                      )}
+                    />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[300px] p-0">
+                  <Command>
+                    <CommandInput placeholder="Search manager..." />
+                    <CommandEmpty>No manager found.</CommandEmpty>
+                    <div className="max-h-[300px] overflow-y-auto">
+                      <CommandGroup>
+                        {getValidManagersForRole(newUserData.role).map((manager) => (
+                          <CommandItem
+                            key={manager.id}
+                            onSelect={() => {
+                              setNewUserData(prev => ({
+                                ...prev,
+                                managerId: manager.id.toString()
+                              }));
+                              setOpenManager(false);
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                newUserData.managerId === manager.id.toString() ? "opacity-100" : "opacity-0"
+                              )}
+                            />
+                            {manager.fullName} ({manager.role})
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </div>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            <div>
+              <Label htmlFor="locationId">Location</Label>
+              <Popover open={openLocation} onOpenChange={setOpenLocation}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={openLocation}
+                    className="w-full justify-between"
+                  >
+                    {newUserData.locationId === "none"
+                      ? "Select location..."
+                      : locations.find(l => l.id.toString() === newUserData.locationId)?.name || "Select location..."}
+                    <Check
+                      className={cn(
+                        "ml-2 h-4 w-4",
+                        newUserData.locationId !== "none" ? "opacity-100" : "opacity-0"
+                      )}
+                    />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[300px] p-0">
+                  <Command>
+                    <CommandInput placeholder="Search location..." />
+                    <CommandEmpty>No location found.</CommandEmpty>
+                    <div className="max-h-[300px] overflow-y-auto">
+                      <CommandGroup>
+                        <CommandItem
+                          onSelect={() => {
+                            setNewUserData(prev => ({ ...prev, locationId: "none" }));
+                            setOpenLocation(false);
+                          }}
+                        >
+                          <Check
+                            className={cn(
+                              "mr-2 h-4 w-4",
+                              newUserData.locationId === "none" ? "opacity-100" : "opacity-0"
+                            )}
+                          />
+                          No Location
+                        </CommandItem>
+                        {locations.map((location) => (
+                          <CommandItem
+                            key={location.id}
+                            onSelect={() => {
+                              setNewUserData(prev => ({
+                                ...prev,
+                                locationId: location.id.toString()
+                              }));
+                              setOpenLocation(false);
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                newUserData.locationId === location.id.toString() ? "opacity-100" : "opacity-0"
+                              )}
+                            />
+                            {location.name}
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </div>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            <div>
+              <Label htmlFor="employeeId">Employee ID</Label>
+              <Input
+                id="employeeId"
+                value={newUserData.employeeId}
+                onChange={(e) => setNewUserData(prev => ({
+                  ...prev,
+                  employeeId: e.target.value
+                }))}
+                required
+              />
+            </div>
+
+            <div className="col-span-2">
+              <Label>Line of Business</Label>
+              <div className="flex gap-2">
+                <Popover open={openLOB} onOpenChange={setOpenLOB}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={openLOB}
+                      className="w-full justify-between"
+                    >
+                      {selectedLOBs.length > 0
+                        ? `${selectedLOBs.length} LOBs selected`
+                        : "Select Line of Business"}
+                      <Check
+                        className={cn(
+                          "ml-2 h-4 w-4",
+                          selectedLOBs.length > 0 ? "opacity-100" : "opacity-0"
+                        )}
+                      />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-full p-0">
+                    <Command>
+                      <CommandInput placeholder="Search Line of Business..." />
+                      <CommandEmpty>No Line of Business found.</CommandEmpty>
+                      <CommandGroup className="max-h-64 overflow-auto">
+                        {lineOfBusinesses.map((lob) => (
+                          <CommandItem
+                            key={lob.id}
+                            onSelect={() => {
+                              setSelectedLOBs(prev => {
+                                const newSelection = prev.includes(lob.id)
+                                  ? prev.filter(id => id !== lob.id)
+                                  : [...prev, lob.id];
+                                return newSelection;
+                              });
+                              setNewUserData(prev => ({
+                                ...prev,
+                                processes: []
+                              }));
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                selectedLOBs.includes(lob.id) ? "opacity-100" : "opacity-0"
+                              )}
+                            />
+                            {lob.name}
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+              </div>
+            </div>
+
+            {selectedLOBs.length > 0 && (
+              <div className="col-span-2">
+                <Label>Processes</Label>
+                <Popover open={openProcess} onOpenChange={setOpenProcess}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={openProcess}
+                      className="w-full justify-between"
+                    >
+                      {isLoadingProcesses ? (
+                        <div className="flex items-center">
+                          <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                          Loading processes...
+                        </div>
+                      ) : (
+                        <>
+                          {newUserData.processes.length > 0
+                            ? `${newUserData.processes.length} processes selected`
+                            : "Select processes"}
+                          <Check
+                            className={cn(
+                              "ml-2 h-4 w-4",
+                              newUserData.processes.length > 0 ? "opacity-100" : "opacity-0"
+                            )}
+                          />
+                        </>
+                      )}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-full p-0">
+                    <Command>
+                      <CommandInput placeholder="Search processes..." />
+                      <CommandEmpty>No process found.</CommandEmpty>
+                      <CommandGroup className="max-h-64 overflow-auto">
+                        {filteredProcesses.map((process) => (
+                          <CommandItem
+                            key={process.id}
+                            onSelect={() => {
+                              setNewUserData(prev => {
+                                const newProcesses = prev.processes.includes(process.id)
+                                  ? prev.processes.filter(id => id !== process.id)
+                                  : [...prev.processes, process.id];
+                                return { ...prev, processes: newProcesses };
+                              });
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                newUserData.processes.includes(process.id) ? "opacity-100" : "opacity-0"
+                              )}
+                            />
+                            {process.name}
+                            <span className="ml-2 text-muted-foreground">
+                              ({lineOfBusinesses.find(l => l.id === process.lineOfBusinessId)?.name})
+                            </span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+              </div>
+            )}
+
+            <div>
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                type="password"
+                value={newUserData.password}
+                onChange={(e) => setNewUserData(prev => ({
+                  ...prev,
+                  password: e.target.value
+                }))}
+                required
+              />
+            </div>
+
+
+            <div>
+              <Label htmlFor="phoneNumber">Phone Number</Label>
+              <Input
+                id="phoneNumber"
+                value={newUserData.phoneNumber}
+                onChange={(e) => setNewUserData(prev => ({
+                  ...prev,
+                  phoneNumber: e.target.value
+                }))}
+                required
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="dateOfJoining">Date of Joining</Label>
+              <Input
+                id="dateOfJoining"
+                type="date"
+                value={newUserData.dateOfJoining}
+                onChange={(e) => setNewUserData(prev => ({
+                  ...prev,
+                  dateOfJoining: e.target.value
+                }))}
+                required
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="dateOfBirth">Date of Birth</Label>
+              <Input
+                id="dateOfBirth"
+                type="date"
+                value={newUserData.dateOfBirth}
+                onChange={(e) => setNewUserData(prev => ({
+                  ...prev,
+                  dateOfBirth: e.target.value
+                }))}
+                required
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="education">Education</Label>
+              <Input
+                id="education"
+                value={newUserData.education}
+                onChange={(e) => setNewUserData(prev => ({
+                  ...prev,
+                  education: e.target.value
+                }))}
+              />
+            </div>
+          </div>
+
+          <div>
+            <Label htmlFor="category">Category</Label>
+            <Input
+              id="category"
+              value={newUserData.role === "manager" ? "Active" : newUserData.category}
+              disabled
+              className="bg-muted cursor-not-allowed"
+            />
+            <input
+              type="hidden"
+              name="category"
+              value={newUserData.role === "manager" ? "active" : newUserData.category}
+            />
+          </div>
+            </div> {/* End of grid cols-2 */}
+          </div> {/* End of space-y-4 */}
+
+          <Button
+            type="submit"
+            className="w-full mt-6"
+            disabled={createUserMutation.isPending}
+          >
+            {createUserMutation.isPending ? (
+              <div className="flex items-center">
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                Creating User...
+              </div>
+            ) : (
+              "Create User"
+            )}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}

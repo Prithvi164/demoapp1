@@ -1,0 +1,1220 @@
+import React, { useState, useEffect, useCallback } from "react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Bell, Users, CalendarDays, CheckCircle2, ClipboardCheck, Loader2, BarChart, ChevronDown, ChevronRight, GraduationCap, LineChart as LineChartIcon, RefreshCcw, Award, Eye, MoreVertical, Download, Clock } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { format, addHours, addMinutes } from "date-fns";
+import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Checkbox } from "@/components/ui/checkbox";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  BarChart as RechartsBarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  LineChart,
+  Line,
+  PieChart,
+  Pie,
+  Cell,
+  ResponsiveContainer,
+  AreaChart,
+  Area
+} from 'recharts';
+import { Progress } from "@/components/ui/progress";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { isSubordinate, getAllSubordinates } from "@/lib/hierarchy-utils";
+
+// Type for batch data
+type Batch = {
+  id: number;
+  name: string;
+  startDate: string;
+  status: string;
+  location: {
+    name: string;
+  };
+  process: {
+    name: string;
+  };
+  line_of_business: {
+    name: string;
+  };
+  capacityLimit: number;
+  userCount?: number;
+  assessmentCount?: number;
+  certificationCount?: number;
+  trainer?: {
+    id: number;
+    fullName: string;
+    email?: string;
+    phoneNumber?: string;
+  } | null;
+};
+
+// Colors for charts
+const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
+
+// Performance metrics types
+type MetricType = 'daily' | 'weekly' | 'monthly';
+type DrilldownLevel = 'overview' | 'phase' | 'trainee';
+
+// Add color constants at the top of the file, after imports
+const PHASE_COLORS = {
+  planned: 'bg-blue-50 hover:bg-blue-100 dark:bg-blue-900/20 dark:hover:bg-blue-900/30',
+  induction: 'bg-purple-50 hover:bg-purple-100 dark:bg-purple-900/20 dark:hover:bg-purple-900/30',
+  training: 'bg-green-50 hover:bg-green-100 dark:bg-green-900/20 dark:hover:bg-green-900/30',
+  certification: 'bg-amber-50 hover:bg-amber-100 dark:bg-amber-900/20 dark:hover:bg-amber-900/30',
+  ojt: 'bg-pink-50 hover:bg-pink-100 dark:bg-pink-900/20 dark:hover:bg-pink-900/30',
+  ojt_certification: 'bg-cyan-50 hover:bg-cyan-100 dark:bg-cyan-900/20 dark:hover:bg-cyan-900/30',
+  completed: 'bg-gray-50 hover:bg-gray-100 dark:bg-gray-900/20 dark:hover:bg-gray-900/30'
+};
+
+const getStatusColor = (status: string): string => {
+  switch (status) {
+    case 'planned': return 'text-blue-600';
+    case 'induction': return 'text-purple-600';
+    case 'training': return 'text-green-600';
+    case 'certification': return 'text-amber-600';
+    case 'ojt': return 'text-pink-600';
+    case 'ojt_certification': return 'text-cyan-600';
+    case 'completed': return 'text-gray-600';
+    default: return '';
+  }
+};
+
+export default function TraineeManagement() {
+  const [selectedTab, setSelectedTab] = useState("all-batches");
+  const [selectedBatch, setSelectedBatch] = useState<number | null>(null);
+  const [metricType, setMetricType] = useState<MetricType>('weekly');
+  const [drilldownLevel, setDrilldownLevel] = useState<DrilldownLevel>('overview');
+  const [selectedPhase, setSelectedPhase] = useState<string | null>(null);
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+
+  // Fetch all batches with optimization
+  const {
+    data: batches = [],
+    isLoading,
+    error
+  } = useQuery<Batch[]>({
+    queryKey: [`/api/organizations/${user?.organizationId}/batches`],
+    enabled: !!user?.organizationId,
+    staleTime: 5 * 60 * 1000, // 5 minutes cache
+    refetchOnWindowFocus: false, // Prevent refetching when window gets focus
+    refetchOnMount: true, // Fetch on mount
+  });
+
+  // Set the first batch as selected by default when batches are loaded
+  useEffect(() => {
+    if (batches && batches.length > 0 && !selectedBatch) {
+      setSelectedBatch(batches[0].id);
+    }
+  }, [batches, selectedBatch]);
+
+  // Fetch batch performance data when a batch is selected with optimizations
+  const { data: batchPerformance } = useQuery({
+    queryKey: [`/api/organizations/${user?.organizationId}/batches/${selectedBatch}/performance`],
+    enabled: !!selectedBatch,
+    staleTime: 5 * 60 * 1000, // 5 minutes cache
+    refetchOnWindowFocus: false, // Don't refetch on window focus
+  });
+  
+  // Type for quiz attempts
+  type QuizAttempt = {
+    id: number;
+    userId: number;
+    score: number;
+    completedAt: string;
+    isPassed: boolean;
+    user?: {
+      fullName: string;
+    };
+    quiz?: {
+      id: number;
+      name: string;
+      description?: string | null;
+      passingScore: number;
+    };
+  };
+
+  // Fetch quiz attempts for the selected batch
+  const { data: quizAttempts = [], isLoading: isLoadingQuizAttempts } = useQuery<QuizAttempt[]>({
+    queryKey: [`/api/organizations/${user?.organizationId}/batches/${selectedBatch}/quiz-attempts`],
+    enabled: !!selectedBatch && !!user?.organizationId && selectedTab === "assessments",
+    staleTime: 5 * 60 * 1000, // 5 minutes cache
+  });
+
+  // Mutation for starting a batch
+  const startBatchMutation = useMutation({
+    mutationFn: async (batchId: number) => {
+      const response = await fetch(`/api/batches/${batchId}/start`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || 'Failed to start batch');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/organizations/${user?.organizationId}/batches`] });
+      toast({
+        title: "Batch Started",
+        description: "The batch has been successfully started and moved to induction phase.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Error Starting Batch",
+        description: error.message,
+      });
+    },
+  });
+
+  // Helper function to format date in IST
+  const formatToIST = (dateStr: string) => {
+    const date = new Date(dateStr);
+    const dateIST = addMinutes(addHours(date, 5), 30);
+    return format(dateIST, "PPP");
+  };
+
+  // Get all users for applying reporting hierarchy filters
+  const { data: allUsers = [] } = useQuery({
+    queryKey: [`/api/organizations/${user?.organizationId}/users`],
+    enabled: !!user?.organizationId,
+    staleTime: 5 * 60 * 1000, // 5 minutes cache
+  });
+
+  // Use hierarchy utility functions for permission checks
+
+  // Filter batches based on user role and reporting hierarchy
+  const filterBatchesByRole = useCallback((batchList: Batch[]) => {
+    if (!user) return [];
+    
+    // Admins and owners can see all batches
+    if (user.role === 'admin' || user.role === 'owner') {
+      return batchList;
+    }
+    
+    // Trainers can only see their assigned batches
+    if (user.role === 'trainer') {
+      return batchList.filter(batch => batch.trainer?.id === user.id);
+    }
+    
+    // Managers can see batches they're the trainer for OR batches assigned to trainers who report to them
+    if (user.role === 'manager' || user.role === 'team_lead') {
+      // Direct assignment to manager
+      const directBatches = batchList.filter(batch => batch.trainer?.id === user.id);
+      
+      // Get all trainers who report to this manager (direct and indirect)
+      const subordinateTrainers = allUsers.filter(u => 
+        (u.role === 'trainer' || u.role === 'team_lead') && 
+        isSubordinate(user.id, u.id, allUsers)
+      );
+      
+      // Get all batches assigned to these trainers
+      const subordinateBatches = batchList.filter(batch => 
+        batch.trainer && 
+        subordinateTrainers.some(trainer => trainer.id === batch.trainer?.id)
+      );
+      
+      // Combine direct and subordinate batches
+      return [...directBatches, ...subordinateBatches];
+    }
+    
+    // For all other roles, just return all batches (or implement more specific logic if needed)
+    return batchList;
+  }, [user, allUsers]);
+  
+  // Apply role filtering then group by status
+  const filteredBatches = filterBatchesByRole(batches);
+  
+  // Group batches by status
+  const batchesByStatus = filteredBatches.reduce((acc, batch) => {
+    if (!acc[batch.status]) {
+      acc[batch.status] = [];
+    }
+    acc[batch.status].push(batch);
+    return acc;
+  }, {} as Record<string, Batch[]>);
+
+  const plannedBatches = batchesByStatus['planned'] || [];
+  const inductionBatches = batchesByStatus['induction'] || [];
+  const trainingBatches = batchesByStatus['training'] || [];
+  const certificationBatches = batchesByStatus['certification'] || [];
+  const ojtBatches = batchesByStatus['ojt'] || [];
+  const completedBatches = batchesByStatus['completed'] || [];
+
+  // Track navigation loading state
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [navigatingBatchId, setNavigatingBatchId] = useState<number | null>(null);
+  
+  // Optimized renderBatchCard function with improved navigation handling
+  const renderBatchCard = useCallback((batch: Batch) => (
+    <Card
+      key={batch.id}
+      className={`${selectedBatch === batch.id ? 'border-primary' : ''} 
+                 ${navigatingBatchId === batch.id && isNavigating ? 'opacity-70' : ''} 
+                 cursor-pointer transition-all duration-200 
+                 ${PHASE_COLORS[batch.status as keyof typeof PHASE_COLORS]}`}
+      onClick={() => {
+        if (batch.status !== 'planned') {
+          // Show loading state
+          setIsNavigating(true);
+          setNavigatingBatchId(batch.id);
+          
+          // Use timeout to ensure the loading state renders before navigation
+          setTimeout(() => {
+            window.location.href = `/batch-details/${batch.id}`;
+          }, 100);
+        } else {
+          setSelectedBatch(batch.id);
+        }
+      }}
+    >
+      <CardContent className="p-6 space-y-4">
+        <div className="flex justify-between items-start">
+          <div>
+            <h3 className="font-semibold text-lg">{batch.name}</h3>
+            <p className="text-sm text-muted-foreground">
+              {batch.location ? batch.location.name : "No location"} • {batch.process ? batch.process.name : "No process"}
+            </p>
+          </div>
+          <Badge
+            variant={batch.status === 'planned' ? "outline" : "secondary"}
+            className={`capitalize transition-all hover:scale-105 ${
+              batch.status === 'planned' ? '' : getStatusColor(batch.status)
+            }`}
+          >
+            {batch.status}
+          </Badge>
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-sm">
+            <span className="font-medium">Start Date:</span>{" "}
+            {formatToIST(batch.startDate)}
+          </p>
+          <p className="text-sm">
+            <span className="font-medium">LOB:</span>{" "}
+            {batch.line_of_business ? batch.line_of_business.name : "Not assigned"}
+          </p>
+          <p className="text-sm">
+            <span className="font-medium">Trainer:</span>{" "}
+            {batch.trainer ? batch.trainer.fullName : (
+              <span className="text-muted-foreground italic">Assign a trainer in batch settings</span>
+            )}
+          </p>
+          <div className="mt-2">
+            <div className="flex justify-between items-center mb-1">
+              <span className="text-sm font-medium">Max Capacity</span>
+              <span className="text-sm">{batch.capacityLimit}</span>
+            </div>
+          </div>
+        </div>
+
+        {batch.status === 'planned' && (
+          <Button
+            className="w-full transition-transform active:scale-95 hover:scale-100"
+            onClick={(e) => {
+              e.stopPropagation();
+              startBatchMutation.mutate(batch.id);
+            }}
+            disabled={startBatchMutation.isPending}
+          >
+            <CheckCircle2 className="h-4 w-4 mr-2" />
+            {startBatchMutation.isPending ? "Starting..." : "Start Batch"}
+          </Button>
+        )}
+        
+        {/* Trainee Assessment Results - Show only for the selected batch */}
+        {selectedBatch === batch.id && batch.status !== 'planned' && (
+          <div className="mt-4 pt-4 border-t">
+            <div className="flex items-center mb-2">
+              <Award className="h-5 w-5 mr-2" />
+              <h4 className="font-medium">Trainee Assessment Results</h4>
+            </div>
+            <Tabs defaultValue="recent" className="mt-2">
+              <TabsList className="mb-4">
+                <TabsTrigger value="recent" className="text-xs">Recent</TabsTrigger>
+                <TabsTrigger value="failed" className="text-xs">Failed</TabsTrigger>
+                <TabsTrigger value="passed" className="text-xs">Passed</TabsTrigger>
+              </TabsList>
+              
+              <TabsContent value="recent">
+                {isLoadingQuizAttempts ? (
+                  <div className="flex justify-center items-center py-4">
+                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground mr-2" />
+                    <span className="text-sm text-muted-foreground">Loading...</span>
+                  </div>
+                ) : quizAttempts.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-3">No assessment data available</p>
+                ) : (
+                  <div className="max-h-[300px] overflow-y-auto">
+                    <Table className="text-sm">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Trainee</TableHead>
+                          <TableHead>Score</TableHead>
+                          <TableHead>Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {quizAttempts.slice(0, 5).map((attempt) => (
+                          <TableRow key={attempt.id}>
+                            <TableCell className="font-medium">{attempt.user?.fullName || 'Unknown'}</TableCell>
+                            <TableCell>{attempt.score}%</TableCell>
+                            <TableCell>
+                              <Badge className={attempt.isPassed ? 
+                                "bg-green-100 text-green-800 hover:bg-green-200 dark:bg-green-800/20 dark:text-green-400" : 
+                                "bg-red-100 text-red-800 hover:bg-red-200 dark:bg-red-800/20 dark:text-red-400"
+                              }>
+                                {attempt.isPassed ? 'Passed' : 'Failed'}
+                              </Badge>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                    {quizAttempts.length > 5 && (
+                      <div className="text-center mt-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-xs"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedTab("assessments");
+                          }}
+                        >
+                          View all {quizAttempts.length} assessments
+                          <ChevronRight className="ml-1 h-3 w-3" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </TabsContent>
+              
+              <TabsContent value="failed">
+                <p className="text-sm text-muted-foreground text-center py-3">
+                  Click on Assessments tab to view failed assessments
+                </p>
+              </TabsContent>
+              
+              <TabsContent value="passed">
+                <p className="text-sm text-muted-foreground text-center py-3">
+                  Click on Assessments tab to view passed assessments
+                </p>
+              </TabsContent>
+            </Tabs>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  ), [selectedBatch, startBatchMutation, isNavigating, navigatingBatchId, isLoadingQuizAttempts, quizAttempts, setSelectedTab]);
+
+  const renderDrilldownControls = useCallback(() => (
+    <div className="flex gap-4 mb-6">
+      <Select value={metricType} onValueChange={(value: MetricType) => setMetricType(value)}>
+        <SelectTrigger className="w-[180px]">
+          <SelectValue placeholder="Select metric type" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="daily">Daily Metrics</SelectItem>
+          <SelectItem value="weekly">Weekly Metrics</SelectItem>
+          <SelectItem value="monthly">Monthly Metrics</SelectItem>
+        </SelectContent>
+      </Select>
+
+      <Select value={drilldownLevel} onValueChange={(value: DrilldownLevel) => setDrilldownLevel(value)}>
+        <SelectTrigger className="w-[180px]">
+          <SelectValue placeholder="Select view level" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="overview">Batch Overview</SelectItem>
+          <SelectItem value="phase">Phase Details</SelectItem>
+          <SelectItem value="trainee">Trainee Details</SelectItem>
+        </SelectContent>
+      </Select>
+
+      {drilldownLevel === 'phase' && (
+        <Select value={selectedPhase || ''} onValueChange={setSelectedPhase}>
+          <SelectTrigger className="w-[180px]">
+            <SelectValue placeholder="Select phase" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="induction">Induction</SelectItem>
+            <SelectItem value="training">Training</SelectItem>
+            <SelectItem value="certification">Certification</SelectItem>
+          </SelectContent>
+        </Select>
+      )}
+    </div>
+  ), [metricType, drilldownLevel, selectedPhase, setMetricType, setDrilldownLevel, setSelectedPhase]);
+
+  // Sample trainee-specific data
+  const traineePerformanceData = [
+    { name: 'John Doe', score: 92, progress: 85, attendance: 95 },
+    { name: 'Jane Smith', score: 88, progress: 90, attendance: 92 },
+    { name: 'Mike Johnson', score: 85, progress: 88, attendance: 90 },
+    { name: 'Sarah Wilson', score: 90, progress: 92, attendance: 88 }
+  ];
+
+  // Sample phase-specific data
+  const phasePerformanceData = {
+    induction: [
+      { name: 'Day 1', completion: 100, performance: 85 },
+      { name: 'Day 2', completion: 90, performance: 88 },
+      { name: 'Day 3', completion: 95, performance: 92 }
+    ],
+    training: [
+      { name: 'Week 1', completion: 85, performance: 80 },
+      { name: 'Week 2', completion: 75, performance: 85 },
+      { name: 'Week 3', completion: 60, performance: 88 }
+    ],
+    certification: [
+      { name: 'Module 1', completion: 90, performance: 85 },
+      { name: 'Module 2', completion: 85, performance: 82 },
+      { name: 'Module 3', completion: 70, performance: 78 }
+    ]
+  };
+
+  const getPerformanceData = useCallback(() => {
+    switch (metricType) {
+      case 'daily':
+        return [
+          { name: 'Mon', score: 85, attendance: 90, assessment: 82 },
+          { name: 'Tue', score: 88, attendance: 95, assessment: 85 },
+          { name: 'Wed', score: 92, attendance: 88, assessment: 90 },
+          { name: 'Thu', score: 90, attendance: 92, assessment: 88 },
+          { name: 'Fri', score: 87, attendance: 85, assessment: 89 }
+        ];
+      case 'weekly':
+        return [
+          { name: 'Week 1', score: 85, attendance: 90, assessment: 82 },
+          { name: 'Week 2', score: 88, attendance: 95, assessment: 85 },
+          { name: 'Week 3', score: 92, attendance: 88, assessment: 90 },
+          { name: 'Week 4', score: 90, attendance: 92, assessment: 88 }
+        ];
+      case 'monthly':
+        return [
+          { name: 'Jan', score: 85, attendance: 90, assessment: 82 },
+          { name: 'Feb', score: 88, attendance: 95, assessment: 85 },
+          { name: 'Mar', score: 92, attendance: 88, assessment: 90 }
+        ];
+      default:
+        return [];
+    }
+  }, [metricType]);
+
+  const renderPerformanceCharts = useCallback(() => {
+    // Overview Level Charts
+    if (drilldownLevel === 'overview') {
+      return (
+        <div className="space-y-8">
+          {/* Overall Performance Trend */}
+          <Card>
+            <CardContent className="p-6">
+              <h3 className="text-lg font-semibold mb-4">Overall Performance Trend</h3>
+              <div className="h-[300px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart
+                    data={getPerformanceData()}
+                    margin={{
+                      top: 5,
+                      right: 30,
+                      left: 20,
+                      bottom: 5,
+                    }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" />
+                    <YAxis />
+                    <Tooltip />
+                    <Legend />
+                    <Line
+                      type="monotone"
+                      dataKey="score"
+                      stroke="#8884d8"
+                      name="Overall Score"
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="attendance"
+                      stroke="#82ca9d"
+                      name="Attendance"
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="assessment"
+                      stroke="#ffc658"
+                      name="Assessment"
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Progress Distribution */}
+          <Card>
+            <CardContent className="p-6">
+              <h3 className="text-lg font-semibold mb-4">Progress Distribution</h3>
+              <div className="h-[300px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart
+                    data={getPerformanceData()}
+                    margin={{
+                      top: 5,
+                      right: 30,
+                      left: 20,
+                      bottom: 5,
+                    }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" />
+                    <YAxis />
+                    <Tooltip />
+                    <Legend />
+                    <Area
+                      type="monotone"
+                      dataKey="score"
+                      stackId="1"
+                      stroke="#8884d8"
+                      fill="#8884d8"
+                      name="Overall Score"
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="attendance"
+                      stackId="1"
+                      stroke="#82ca9d"
+                      fill="#82ca9d"
+                      name="Attendance"
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="assessment"
+                      stackId="1"
+                      stroke="#ffc658"
+                      fill="#ffc658"
+                      name="Assessment"
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      );
+    }
+
+    // Phase Level Charts
+    if (drilldownLevel === 'phase' && selectedPhase) {
+      const phaseData = phasePerformanceData[selectedPhase as keyof typeof phasePerformanceData];
+      return (
+        <div className="space-y-8">
+          <Card>
+            <CardContent className="p-6">
+              <h3 className="text-lg font-semibold mb-4">
+                {selectedPhase.charAt(0).toUpperCase() + selectedPhase.slice(1)} Phase Performance
+              </h3>
+              <div className="h-[300px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <RechartsBarChart
+                    data={phaseData}
+                    margin={{
+                      top: 5,
+                      right: 30,
+                      left: 20,
+                      bottom: 5,
+                    }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" />
+                    <YAxis />
+                    <Tooltip />
+                    <Legend />
+                    <Bar dataKey="completion" fill="#8884d8" name="Completion %" />
+                    <Bar dataKey="performance" fill="#82ca9d" name="Performance Score" />
+                  </RechartsBarChart>
+                </ResponsiveContainer>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      );
+    }
+
+    // Trainee Level Charts
+    if (drilldownLevel === 'trainee') {
+      return (
+        <div className="space-y-8">
+          <Card>
+            <CardContent className="p-6">
+              <h3 className="text-lg font-semibold mb-4">Individual Trainee Performance</h3>
+              <div className="h-[300px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <RechartsBarChart
+                    data={traineePerformanceData}
+                    margin={{
+                      top: 5,
+                      right: 30,
+                      left: 20,
+                      bottom: 5,
+                    }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" />
+                    <YAxis />
+                    <Tooltip />
+                    <Legend />
+                    <Bar dataKey="score" fill="#8884d8" name="Overall Score" />
+                    <Bar dataKey="progress" fill="#82ca9d" name="Progress" />
+                    <Bar dataKey="attendance" fill="#ffc658" name="Attendance" />
+                  </RechartsBarChart>
+                </ResponsiveContainer>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      );
+    }
+
+    return null;
+  }, [drilldownLevel, selectedPhase, metricType]);
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <span className="ml-2">Loading batches...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <Alert variant="destructive">
+        <AlertDescription>
+          Error loading batches. Please refresh the page to try again.
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  return (
+    <div className="p-8 space-y-6">
+      <div className="flex justify-between items-center">
+        <h1 className="text-3xl font-bold">Trainee Management</h1>
+      </div>
+
+      <Tabs value={selectedTab} onValueChange={setSelectedTab} className="space-y-6">
+        <TabsList>
+          <TabsTrigger value="all-batches" className="flex items-center gap-2">
+            <Users className="h-4 w-4" />
+            All Batches
+          </TabsTrigger>
+          <TabsTrigger value="progress" className="flex items-center gap-2">
+            <BarChart className="h-4 w-4" />
+            Progress {selectedBatch && <Badge variant="outline" className="ml-2">Batch Selected</Badge>}
+          </TabsTrigger>
+          {/* Only show Assessments & Certifications tab when there's a training batch */}
+          {trainingBatches.length > 0 && (
+            <TabsTrigger value="assessments" className="flex items-center gap-2">
+              <ClipboardCheck className="h-4 w-4" />
+              Assessments & Certifications
+            </TabsTrigger>
+          )}
+          <TabsTrigger value="notifications" className="flex items-center gap-2">
+            <Bell className="h-4 w-4" />
+            Notifications
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="all-batches">
+          <div className="space-y-6">
+            {plannedBatches.length > 0 && (
+              <div>
+                <h2 className="text-lg font-semibold mb-4">Planned Batches</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {plannedBatches.map(renderBatchCard)}
+                </div>
+              </div>
+            )}
+
+            {inductionBatches.length > 0 && (
+              <div>
+                <h2 className="text-lg font-semibold mb-4">Induction Phase</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {inductionBatches.map(renderBatchCard)}
+                </div>
+              </div>
+            )}
+
+            {trainingBatches.length > 0 && (
+              <div>
+                <h2 className="text-lg font-semibold mb-4">Training Phase</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {trainingBatches.map(renderBatchCard)}
+                </div>
+              </div>
+            )}
+
+            {certificationBatches.length > 0 && (
+              <div>
+                <h2 className="text-lg font-semibold mb-4">Certification Phase</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {certificationBatches.map(renderBatchCard)}
+                </div>
+              </div>
+            )}
+
+            {ojtBatches.length > 0 && (
+              <div>
+                <h2 className="text-lg font-semibold mb-4">OJT Phase</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {ojtBatches.map(renderBatchCard)}
+                </div>
+              </div>
+            )}
+
+            {completedBatches.length > 0 && (
+              <div>
+                <h2 className="text-lg font-semibold mb-4">Completed Batches</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {completedBatches.map(renderBatchCard)}
+                </div>
+              </div>
+            )}
+
+            {batches.length === 0 && (
+              <Alert>
+                <AlertDescription>
+                  No batches found. Create a new batch to get started.
+                </AlertDescription>
+              </Alert>
+            )}
+          </div>
+        </TabsContent>
+
+        <TabsContent value="progress">
+          {selectedBatch ? (
+            <div className="space-y-6">
+              {renderDrilldownControls()}
+              {renderPerformanceCharts()}
+            </div>
+          ) : (
+            <Alert>
+              <AlertDescription>
+                Select a batch to view detailed performance metrics.
+              </AlertDescription>
+            </Alert>
+          )}
+        </TabsContent>
+
+
+
+        <TabsContent value="assessments">
+          <div className="space-y-6">
+            <div className="flex justify-between items-center">
+              <h2 className="text-lg font-semibold">Assessments & Certifications</h2>
+              <div className="flex gap-2">
+                <Button variant="outline">
+                  <RefreshCcw className="h-4 w-4 mr-2" />
+                  Schedule Refresher
+                </Button>
+              </div>
+            </div>
+            
+            {/* Assessment Insights Card */}
+            <Card className="bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-blue-950/40 dark:to-indigo-950/40 border-blue-100 dark:border-blue-800">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base text-blue-800 dark:text-blue-300 flex items-center">
+                  <LineChartIcon className="h-5 w-5 mr-2 text-blue-600 dark:text-blue-400" />
+                  Assessment Insights
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="bg-white dark:bg-slate-900 rounded-md p-4 shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center">
+                        <div className="bg-green-100 dark:bg-green-900/30 p-2 rounded-full mr-3">
+                          <ClipboardCheck className="h-5 w-5 text-green-600 dark:text-green-400" />
+                        </div>
+                        <div>
+                          <p className="text-sm text-muted-foreground">Total Assessments</p>
+                          <h4 className="text-2xl font-bold">{trainingBatches.reduce((sum, batch) => sum + (batch.assessmentCount || 0), 0)}</h4>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-white dark:bg-slate-900 rounded-md p-4 shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center">
+                        <div className="bg-purple-100 dark:bg-purple-900/30 p-2 rounded-full mr-3">
+                          <GraduationCap className="h-5 w-5 text-purple-600 dark:text-purple-400" />
+                        </div>
+                        <div>
+                          <p className="text-sm text-muted-foreground">Certifications</p>
+                          <h4 className="text-2xl font-bold">{trainingBatches.reduce((sum, batch) => sum + (batch.certificationCount || 0), 0)}</h4>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-white dark:bg-slate-900 rounded-md p-4 shadow-sm">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center">
+                        <div className="bg-amber-100 dark:bg-amber-900/30 p-2 rounded-full mr-3">
+                          <Users className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+                        </div>
+                        <div>
+                          <p className="text-sm text-muted-foreground">Trainees</p>
+                          <h4 className="text-2xl font-bold">{trainingBatches.reduce((sum, batch) => sum + (batch.userCount || 0), 0)}</h4>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            
+            {/* Trainee Assessment Results Tab */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base flex items-center">
+                  <Award className="h-5 w-5 mr-2" />
+                  Trainee Assessment Results
+                </CardTitle>
+                <CardDescription>
+                  View assessment results for trainees in the training phase
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Tabs defaultValue="recent">
+                  <TabsList className="mb-4">
+                    <TabsTrigger value="recent">Recent Assessments</TabsTrigger>
+                    <TabsTrigger value="failed">Failed Assessments</TabsTrigger>
+                    <TabsTrigger value="passed">Passed Assessments</TabsTrigger>
+                  </TabsList>
+                  
+                  <TabsContent value="recent" className="space-y-4">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Trainee</TableHead>
+                          <TableHead>Assessment</TableHead>
+                          <TableHead>Score</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Completion Date</TableHead>
+                          <TableHead>Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {selectedBatch ? (
+                          <>
+                            {isLoadingQuizAttempts ? (
+                              <TableRow>
+                                <TableCell colSpan={6} className="text-center py-4">
+                                  <div className="flex justify-center items-center space-x-2">
+                                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                                    <span className="text-muted-foreground">Loading assessment data...</span>
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            ) : quizAttempts.length === 0 ? (
+                              <TableRow>
+                                <TableCell colSpan={6} className="text-center py-4">
+                                  <p className="text-muted-foreground">No assessment data available for this batch</p>
+                                </TableCell>
+                              </TableRow>
+                            ) : (
+                              quizAttempts.map((attempt) => (
+                                <TableRow key={attempt.id}>
+                                  <TableCell className="font-medium">{attempt.user?.fullName || 'Unknown User'}</TableCell>
+                                  <TableCell>{attempt.quiz?.name || 'Unnamed Assessment'}</TableCell>
+                                  <TableCell>{attempt.score}%</TableCell>
+                                  <TableCell>
+                                    <Badge className={attempt.isPassed ? 
+                                      "bg-green-100 text-green-800 hover:bg-green-200 dark:bg-green-800/20 dark:text-green-400" : 
+                                      "bg-red-100 text-red-800 hover:bg-red-200 dark:bg-red-800/20 dark:text-red-400"
+                                    }>
+                                      {attempt.isPassed ? 'Passed' : 'Failed'}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell>{new Date(attempt.completedAt).toLocaleDateString()}</TableCell>
+                                  <TableCell>
+                                    <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button variant="ghost" size="icon">
+                                      <MoreVertical className="h-4 w-4" />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    <DropdownMenuItem>
+                                      <Eye className="h-4 w-4 mr-2" />
+                                      View Details
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem>
+                                      <RefreshCcw className="h-4 w-4 mr-2" />
+                                      Schedule Refresher
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem>
+                                      <Clock className="h-4 w-4 mr-2" />
+                                      Reschedule Assessment
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              </TableCell>
+                            </TableRow>
+                            ))
+                            )}
+                          </>
+                        ) : (
+                          <TableRow>
+                            <TableCell colSpan={6} className="text-center py-4 text-muted-foreground">
+                              Select a batch to view trainee assessment results
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </TabsContent>
+                  
+                  <TabsContent value="failed" className="space-y-4">
+                    <div className="flex justify-between mb-4">
+                      <div>
+                        <h3 className="text-sm font-medium">Failed Assessments</h3>
+                        <p className="text-sm text-muted-foreground">Trainees who need additional training</p>
+                      </div>
+                      <Button variant="outline" size="sm">
+                        <RefreshCcw className="h-4 w-4 mr-2" />
+                        Schedule Group Refresher
+                      </Button>
+                    </div>
+                    
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>
+                            <div className="flex items-center space-x-2">
+                              <Checkbox id="select-all" />
+                              <label htmlFor="select-all">Trainee</label>
+                            </div>
+                          </TableHead>
+                          <TableHead>Assessment</TableHead>
+                          <TableHead>Score</TableHead>
+                          <TableHead>Attempts</TableHead>
+                          <TableHead>Last Attempt</TableHead>
+                          <TableHead>Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {selectedBatch ? (
+                          <>
+                            {isLoadingQuizAttempts ? (
+                              <TableRow>
+                                <TableCell colSpan={6} className="text-center py-4">
+                                  <div className="flex justify-center items-center space-x-2">
+                                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                                    <span className="text-muted-foreground">Loading assessment data...</span>
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            ) : (
+                              quizAttempts.filter(attempt => !attempt.isPassed).map((attempt, index) => (
+                                <TableRow key={attempt.id}>
+                                  <TableCell>
+                                    <div className="flex items-center space-x-2">
+                                      <Checkbox id={`select-failed-${index}`} />
+                                      <label htmlFor={`select-failed-${index}`} className="font-medium">
+                                        {attempt.user?.fullName || 'Unknown User'}
+                                      </label>
+                                    </div>
+                                  </TableCell>
+                                  <TableCell>{attempt.quiz?.name || 'Unnamed Assessment'}</TableCell>
+                                  <TableCell>{attempt.score}%</TableCell>
+                                  <TableCell>1</TableCell>
+                                  <TableCell>{new Date(attempt.completedAt).toLocaleDateString()}</TableCell>
+                                  <TableCell>
+                                    <DropdownMenu>
+                                      <DropdownMenuTrigger asChild>
+                                        <Button variant="ghost" size="icon">
+                                          <MoreVertical className="h-4 w-4" />
+                                        </Button>
+                                      </DropdownMenuTrigger>
+                                      <DropdownMenuContent align="end">
+                                        <DropdownMenuItem>
+                                          <Eye className="h-4 w-4 mr-2" />
+                                          View Details
+                                        </DropdownMenuItem>
+                                        <DropdownMenuItem>
+                                          <RefreshCcw className="h-4 w-4 mr-2" />
+                                          Schedule Refresher
+                                        </DropdownMenuItem>
+                                        <DropdownMenuItem>
+                                          <Clock className="h-4 w-4 mr-2" />
+                                          Reschedule Assessment
+                                        </DropdownMenuItem>
+                                      </DropdownMenuContent>
+                                    </DropdownMenu>
+                                  </TableCell>
+                                </TableRow>
+                              ))
+                            )}
+                          </>
+                        ) : (
+                          <TableRow>
+                            <TableCell colSpan={6} className="text-center py-4 text-muted-foreground">
+                              Select a batch to view failed assessments
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </TabsContent>
+                  
+                  <TabsContent value="passed" className="space-y-4">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Trainee</TableHead>
+                          <TableHead>Assessment</TableHead>
+                          <TableHead>Score</TableHead>
+                          <TableHead>Completion Date</TableHead>
+                          <TableHead>Certificate</TableHead>
+                          <TableHead>Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {selectedBatch ? (
+                          <>
+                            {isLoadingQuizAttempts ? (
+                              <TableRow>
+                                <TableCell colSpan={6} className="text-center py-4">
+                                  <div className="flex justify-center items-center space-x-2">
+                                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                                    <span className="text-muted-foreground">Loading assessment data...</span>
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            ) : (
+                              quizAttempts.filter(attempt => attempt.isPassed).map((attempt) => (
+                                <TableRow key={attempt.id}>
+                                  <TableCell className="font-medium">{attempt.user?.fullName || 'Unknown User'}</TableCell>
+                                  <TableCell>{attempt.quiz?.name || 'Unnamed Assessment'}</TableCell>
+                                  <TableCell>{attempt.score}%</TableCell>
+                                  <TableCell>{new Date(attempt.completedAt).toLocaleDateString()}</TableCell>
+                                  <TableCell>
+                                    <Button variant="ghost" size="sm">
+                                      <Download className="h-4 w-4 mr-2" />
+                                      Certificate
+                                    </Button>
+                                  </TableCell>
+                                  <TableCell>
+                                    <Button variant="ghost" size="icon">
+                                      <Eye className="h-4 w-4" />
+                                    </Button>
+                                  </TableCell>
+                                </TableRow>
+                              ))
+                            )}
+                          </>
+                        ) : (
+                          <TableRow>
+                            <TableCell colSpan={6} className="text-center py-4 text-muted-foreground">
+                              Select a batch to view passed assessments
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </TabsContent>
+                </Tabs>
+              </CardContent>
+            </Card>
+            
+            {trainingBatches.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {trainingBatches.map(batch => (
+                  <Card key={batch.id} className="overflow-hidden">
+                    <CardContent className="p-0">
+                      <div className="p-6 space-y-4">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <h3 className="font-semibold">{batch.name}</h3>
+                            <p className="text-sm text-muted-foreground">
+                              {batch.location ? batch.location.name : "No location"} • {batch.process ? batch.process.name : "No process"}
+                            </p>
+                          </div>
+                          <Badge className="bg-green-100 text-green-800 hover:bg-green-200 dark:bg-green-800/20 dark:text-green-400">
+                            Training
+                          </Badge>
+                        </div>
+                        
+                        <div className="space-y-2">
+                          <div className="flex justify-between text-sm">
+                            <span>Trainees:</span>
+                            <span className="font-medium">{batch.userCount || '0'}</span>
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span>Assessments:</span>
+                            <span className="font-medium">0</span>
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span>Certifications:</span>
+                            <span className="font-medium">0</span>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="border-t p-4 bg-muted/20">
+                        <Button variant="outline" className="w-full" onClick={() => {
+                          window.location.href = `/batch-details/${batch.id}`;
+                        }}>
+                          Manage Assessments
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <div className="bg-muted/40 rounded-md p-8 text-center">
+                <ClipboardCheck className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                <h3 className="text-lg font-medium mb-2">No Active Training Batches</h3>
+                <p className="text-sm text-muted-foreground mb-4">
+                  Assessments & Certifications are available for batches in the training phase.
+                </p>
+              </div>
+            )}
+          </div>
+        </TabsContent>
+        
+        <TabsContent value="notifications">
+          <Alert>
+            <AlertDescription>
+              Notifications about batch progress and important updates will appear here.
+            </AlertDescription>
+          </Alert>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}

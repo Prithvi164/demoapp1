@@ -1,0 +1,169 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --app-height: 100%;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    -webkit-text-size-adjust: 100%;
+    -ms-text-size-adjust: 100%;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    @apply font-sans antialiased bg-background text-foreground;
+    transition: background-color 0.3s ease, color 0.3s ease;
+    overflow-x: hidden;
+    height: var(--app-height);
+  }
+
+  #root {
+    height: 100%;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  button, a {
+    @apply transition-all duration-200;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-medium tracking-tight;
+  }
+}
+
+@layer utilities {
+  .animate-fade-in {
+    animation: fadeIn 0.5s ease-in-out;
+  }
+  
+  /* Logo contextual background utilities */
+  .logo-container {
+    transition: background-color 0.8s ease-in-out, 
+                border-color 0.8s ease-in-out,
+                transform 0.3s ease-in-out,
+                box-shadow 0.4s ease-in-out;
+    position: relative;
+    overflow: hidden;
+  }
+  
+  .logo-container:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  }
+  
+  /* Shimmer effect when route changes */
+  .logo-container::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(
+      90deg, 
+      transparent, 
+      rgba(255, 255, 255, 0.5), 
+      transparent
+    );
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+  }
+  
+  .logo-container.animate-shimmer::after {
+    animation: shimmer 1.2s ease-in-out;
+  }
+  
+  @keyframes shimmer {
+    0% {
+      left: -100%;
+      opacity: 0.8;
+    }
+    50% {
+      opacity: 0.9;
+    }
+    100% {
+      left: 100%;
+      opacity: 0;
+    }
+  }
+  
+  /* Section-based glow effects */
+  .section-dashboard .logo-container {
+    box-shadow: 0 2px 8px rgba(249, 115, 22, 0.05);
+  }
+  
+  .section-trainee .logo-container {
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.05);
+  }
+  
+  .section-quiz .logo-container {
+    box-shadow: 0 2px 8px rgba(34, 197, 94, 0.05);
+  }
+  
+  .section-evaluation .logo-container {
+    box-shadow: 0 2px 8px rgba(168, 85, 247, 0.05);
+  }
+  
+  .section-audio .logo-container {
+    box-shadow: 0 2px 8px rgba(6, 182, 212, 0.05);
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  .page-transition-enter {
+    opacity: 0;
+  }
+  
+  .page-transition-enter-active {
+    opacity: 1;
+    transition: opacity 300ms;
+  }
+  
+  .page-transition-exit {
+    opacity: 1;
+  }
+  
+  .page-transition-exit-active {
+    opacity: 0;
+    transition: opacity 300ms;
+  }
+  
+  /* DPI Scaling Utilities */
+  .scale-correct {
+    transform-origin: top left;
+    transform: scale(calc(1 / var(--scale-factor, 1)));
+  }
+  
+  /* Improve text rendering on scaled displays */
+  .scaled-display {
+    text-rendering: optimizeLegibility;
+  }
+  
+  /* Responsive width adjustments */
+  .w-screen-scale {
+    width: calc(100vw / var(--scale-factor, 1));
+  }
+  
+  .h-screen-scale {
+    height: calc(100vh / var(--scale-factor, 1));
+  }
+}
